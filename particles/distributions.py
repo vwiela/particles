@@ -204,7 +204,8 @@ omit ``ppf`` if you do not plan to use SQMC (Sequential quasi Monte Carlo).
 
 from __future__ import division, print_function
 
-from collections import OrderedDict  # see prior
+from collections import OrderedDict
+from re import S  # see prior
 import numpy as np
 import numpy.random as random
 import scipy.stats as stats
@@ -828,6 +829,113 @@ class MixMissing(ProbDist):
 ############################
 
 class MvNormal(ProbDist):
+
+    def __init__(self, loc=0., scale=1., cov=None):
+        self.cov = np.array([np.eye(len(loc[0]))]*loc.shape[0]) if cov is None else cov
+        self.loc = loc
+        self.scale = scale
+        err_msg = 'mvnorm: argument cov must contain dxd ndarrays, \
+                with d>1, defining a symmetric positive matrix'
+        try:
+            self.L = cholesky(self.cov[0], lower=True)  # L*L.T = cov
+        except:
+            raise ValueError(err_msg)
+        assert self.cov[0].shape == (self.dim, self.dim), err_msg
+        L_list = []
+        for i in range(self.cov.shape[0]):
+            L_list.append(cholesky(self.cov[i], lower=True))
+        self.L_list = L_list
+        self.halflogdetcor = np.zeros(len(L_list))
+        for i in range(len(L_list)):
+            self.halflogdetcor[i] = np.sum(np.log(np.diag(self.L_list[i])))
+
+    @property
+    def number(self):
+        return self.cov.shape[0]
+
+    @property
+    def dim(self):
+        return self.cov.shape[-1]
+
+    def linear_transform(self, z):
+        # z is a list of normal random variables, Nxd
+        transformed = np.empty_like(z)
+        for i in range(z.shape[0]):
+            transformed[i] = self.loc[i] + self.scale * np.dot(z[i], self.L_list[i].T)
+        return transformed
+
+    def logpdf(self, x): # x is Nxd
+        if x.shape[0] > self.number:
+            raise AssertionError('given number realisations is greater than number of rv`s')
+        z = []
+        for i in range(x.shape[0]):
+            z.append(solve_triangular(L, ((x[i] - loc[i]) / scale), lower=True))
+        z = np.array(z)
+        # z is Nxd as well
+        if np.asarray(self.scale).ndim == 0:
+            logdet = np.array([self.dim * np.log(self.scale)]*x.shape[0])
+        else:
+            logdet = np.array([np.sum(np.log(self.scale), axis=-1)]*x.shape[0])
+        logdet += self.halflogdetcor
+        return - 0.5 * np.sum(z * z, axis=1) - logdet - self.dim * (0.5*np.log(2*np.pi))
+
+    def rvs(self, size=None):
+        if size is None:
+            size = self.number
+        elif size > self.number:
+            raise AssertionError('asked number of rv`s is greater than number of given input rv`s')
+        else:
+            N = size
+        z = stats.norm.rvs(size=(N, self.dim))
+        return self.linear_transform(z)
+
+    def ppf(self, u): # Works but why u needs to be Nxd and what is it used for when it treats just the partial case
+        """
+        Note: if dim(u) < self.dim, the remaining columns are filled with 0
+        Useful in case the distribution is partly degenerate.
+        """
+        N, du = u.shape
+        if du < self.dim:
+            z = np.zeros((N, self.dim))
+            z[:, :du] = stats.norm.ppf(u)
+        else:
+            z = stats.norm.ppf(u)
+        return self.linear_transform(z)
+
+    def posterior(self, x, Sigma=None):
+        """Posterior for model: X1, ..., Xn ~ N(theta, Sigma), theta ~ self.
+
+        Parameters
+        ----------
+        x: (n, d) ndarray
+            data
+        Sigma: (n, d, d) ndarray
+            covariance matrices in the model (default: identity matrix)
+
+        Notes
+        -----
+        Scale must be set to 1.
+        """
+        if self.scale != 1.:
+            raise ValueError('posterior of MvNormal: scale must be one.')
+        n = x.shape[0]
+        Sigma = np.array([np.eye(self.dim)]*x.shape[0]) if Sigma is None else Sigma
+        Siginv = np.array([inv(Sig) for Sig in list(Sigma)])
+        covinv = np.array([inv(cov) for cov in list(self.cov)])
+        Qpost = np.empty_like(Sigma)
+        for i in range(n):
+            Qpost[i] = covinv[i] + n * Siginv[i]
+        Sigpost = np.array([inv(Qp) for Qp in list(Qpost)])
+        m = np.full(self.dim, self.loc) if np.isscalar(self.loc) else self.loc
+        mupost = np.empty_like(x)
+        for i in range(n):
+            mupost[i] = Sigpost[i] @ (m[i] @ covinv[i] + Siginv[i] @ np.sum(x, axis=0))
+        # m @ covinv works wether the shape of m is (N, d) or (d)
+        return MvNormal(loc=mupost, cov=Sigpost)
+
+
+
+class MvNormal_old(ProbDist):
     """Multivariate Normal distribution.
 
     Parameters
@@ -838,6 +946,10 @@ class MvNormal(ProbDist):
         scale parameter (default: 1.)
     cov: (d, d) ndarray
         covariance matrix (default: identity, with dim determined by loc)
+    
+    In this version one can give a sequence of means and a sequence of covariance matrices.
+    And then receives random variables according to that.
+    One just needs to be aware that then size has a different meaning. 
 
     Notes
     -----
@@ -868,24 +980,34 @@ class MvNormal(ProbDist):
     """
 
     def __init__(self, loc=0., scale=1., cov=None):
-        self.cov = np.eye(loc.shape[-1]) if cov is None else cov
+        self.cov = [np.eye(loc.shape[-1])]*loc.shape[0] if cov is None else cov
         self.loc = loc
         self.scale = scale
-        err_msg = 'mvnorm: argument cov must be a dxd ndarray, \
+        err_msg = 'mvnorm: argument cov must contain dxd ndarrays, \
                 with d>1, defining a symmetric positive matrix'
         try:
-            self.L = cholesky(self.cov, lower=True)  # L*L.T = cov
+            self.L = cholesky(self.cov[0], lower=True)  # L*L.T = cov
             self.halflogdetcor = np.sum(np.log(np.diag(self.L)))
         except:
             raise ValueError(err_msg)
-        assert self.cov.shape == (self.dim, self.dim), err_msg
+        assert self.cov[0].shape == (self.dim, self.dim), err_msg
+
+    @property
+    def number(self):
+        return self.cov.shape[0]
 
     @property
     def dim(self):
-        return self.cov.shape[0]
+        return self.cov.shape[-1]
 
     def linear_transform(self, z):
-        return self.loc + self.scale * np.dot(z, self.L.T)
+        # z is a list of normal random variables
+        transformed = []
+        for i in range(z.shape[0]):
+            L = cholesky(self.cov[i], lower=True)
+            trans = self.loc[i] + self.scale * np.dot(z[i], L.T)
+            transformed.append(trans)
+        return np.array(transformed)
 
     def logpdf(self, x):
         z = solve_triangular(self.L, np.transpose((x - self.loc) / self.scale),
@@ -900,9 +1022,9 @@ class MvNormal(ProbDist):
 
     def rvs(self, size=None):
         if size is None:
-            sh = np.broadcast(self.loc, self.scale).shape
-            # sh=() when both loc and scale are scalars
-            N = 1 if len(sh) == 0 else sh[0]
+            size = self.number
+        elif size > self.number:
+            raise AssertionError('asked number of rv`s is greater than number of given input rv`s')
         else:
             N = size
         z = stats.norm.rvs(size=(N, self.dim))
