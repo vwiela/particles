@@ -933,7 +933,7 @@ class MvNormal(ProbDist):
         # m @ covinv works wether the shape of m is (N, d) or (d)
         return MvNormal(loc=mupost, cov=Sigpost)
 
-class MvNormal_new(dists.ProbDist):
+class MvNormal_new(ProbDist):
 
     def __init__(self, loc=0., scale=1., cov=None, trunc_rv=False):
         self.cov = np.array([np.eye(len(loc[0]))]*loc.shape[0]) if cov is None else cov
