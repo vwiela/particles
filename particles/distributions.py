@@ -974,7 +974,7 @@ class MvNormal_new(ProbDist):
         if self.number == 1:
             l = np.empty(x.shape[0])
             for n in range(x.shape[0]):
-                l[n] = stats.multivariate_normal.logpdf(x[n], mean =self.loc[0], cov=self.cov[0])
+                l[n] = stats.multivariate_normal.logpdf(x[n], mean =self.loc[0], cov=self.cov[0], allow_singular=True)
             return l
         
         if x.shape[0] > self.number:
@@ -983,13 +983,13 @@ class MvNormal_new(ProbDist):
         if np.ndim(x)==1 and x.shape[0]==self.dim: # for the case where data is given as  y(t)=[y1,y2]
             l = np.empty(self.number)
             for n in range(self.number):
-                l[n] = stats.multivariate_normal.logpdf(x, mean=self.loc[n,:], cov=self.cov[n, :, :])
+                l[n] = stats.multivariate_normal.logpdf(x, mean=self.loc[n,:], cov=self.cov[n, :, :], allow_singular=True)
             return l
 
 
         l = np.empty(x.shape[0])
         for n in range(x.shape[0]):
-            l[n] = stats.multivariate_normal.logpdf(x[n], mean =self.loc[n,:], cov=self.cov[n,:,:])
+            l[n] = stats.multivariate_normal.logpdf(x[n], mean =self.loc[n,:], cov=self.cov[n,:,:], allow_singular=True)
         return l
 
     def rvs(self, size=None):
