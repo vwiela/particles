@@ -1073,7 +1073,6 @@ class MvNormal_new(ProbDist):
 
 class MvNormal_old(ProbDist):
     """Multivariate Normal distribution.
-
     Parameters
     ----------
     loc: ndarray
@@ -1082,85 +1081,63 @@ class MvNormal_old(ProbDist):
         scale parameter (default: 1.)
     cov: (d, d) ndarray
         covariance matrix (default: identity, with dim determined by loc)
-    
-    In this version one can give a sequence of means and a sequence of covariance matrices.
-    And then receives random variables according to that.
-    One just needs to be aware that then size has a different meaning. 
-
     Notes
     -----
-    The dimension d is determined either by argument ``cov`` (if it's a dxd 
+    The dimension d is determined either by argument ``cov`` (if it is a dxd 
     array), or by argument loc (if ``cov`` is not specified). In the latter 
     case, the covariance matrix is set to the identity matrix. 
-
     If ``scale`` is set to ``1.`` (default value), we use the standard 
     parametrisation of a Gaussian, with mean ``loc`` and covariance 
     matrix ``cov``. Otherwise::
-
         x = dists.MvNormal(loc=m, scale=s, cov=Sigma).rvs(size=30)
-
     is equivalent to::
-
         x = m + s * dists.MvNormal(cov=Sigma).rvs(size=30)
-
-    The idea is that they are many cases when we may want to pass
-    varying means and scales (but a fixed correlation matrix). Note that
+    The idea is that they are cases when we may want to pass varying
+    means and scales (but a fixed correlation matrix). Note that
     ``cov`` does not need to be a correlation matrix; e.g.::
-
         MvNormal(loc=m, scale=s, cov=C)
-
-    correspond to N(m, diag(s)*C*diag(s))
-
+    corresponds to N(m, diag(s)*C*diag(s)).
     In addition, note that m and s may be (N, d) vectors;
     i.e for each n=1...N we have a different mean, and a different scale.
+    To specify a Multivariate Normal distribution with a different covariance
+    matrix for each particle, see `VaryingCovNormal`.
     """
 
     def __init__(self, loc=0., scale=1., cov=None):
-        self.cov = [np.eye(loc.shape[-1])]*loc.shape[0] if cov is None else cov
         self.loc = loc
         self.scale = scale
-        err_msg = 'mvnorm: argument cov must contain dxd ndarrays, \
-                with d>1, defining a symmetric positive matrix'
+        self.cov = np.eye(loc.shape[-1]) if cov is None else cov
+        err_msg = 'MvNormal: argument cov must be a (d, d) pos. definite matrix'
         try:
-            self.L = cholesky(self.cov[0], lower=True)  # L*L.T = cov
-            self.halflogdetcor = np.sum(np.log(np.diag(self.L)))
+            self.L = cholesky(self.cov)  # lower triangle
         except:
             raise ValueError(err_msg)
-        assert self.cov[0].shape == (self.dim, self.dim), err_msg
-
-    @property
-    def number(self):
-        return self.cov.shape[0]
+        assert self.cov.shape == (self.dim, self.dim), err_msg
 
     @property
     def dim(self):
         return self.cov.shape[-1]
 
     def linear_transform(self, z):
-        # z is a list of normal random variables
-        transformed = []
-        for i in range(z.shape[0]):
-            L = cholesky(self.cov[i], lower=True)
-            trans = self.loc[i] + self.scale * np.dot(z[i], L.T)
-            transformed.append(trans)
-        return np.array(transformed)
+        return self.loc + self.scale * np.dot(z, self.L.T)
 
     def logpdf(self, x):
-        z = solve_triangular(self.L, np.transpose((x - self.loc) / self.scale),
-                             lower=True)
+        halflogdetcor = np.sum(np.log(np.diag(self.L)))
+        xc = (x - self.loc) / self.scale
+        z = solve_triangular(self.L, np.transpose(xc), lower=True)
         # z is dxN, not Nxd
         if np.asarray(self.scale).ndim == 0:
             logdet = self.dim * np.log(self.scale)
         else:
             logdet = np.sum(np.log(self.scale), axis=-1)
-        logdet += self.halflogdetcor
+        logdet += halflogdetcor
         return - 0.5 * np.sum(z * z, axis=0) - logdet - self.dim * HALFLOG2PI
 
     def rvs(self, size=None):
         if size is None:
-            size = self.number
-        elif size > self.number:
-            raise AssertionError('asked number of rv`s is greater than number of given input rv`s')
+            sh = np.broadcast(self.loc, self.scale).shape
+            # sh=() when both loc and scale are scalars
+            N = 1 if len(sh) == 0 else sh[0]
         else:
             N = size
         z = stats.norm.rvs(size=(N, self.dim))
@@ -1168,7 +1145,7 @@ class MvNormal_old(ProbDist):
 
     def ppf(self, u):
         """
-        Note: if dim(u) < self.dim, the remaining columns are filled with 0
+        Note: if dim(u) < self.dim, the remaining columns are filled with 0.
         Useful in case the distribution is partly degenerate.
         """
         N, du = u.shape
@@ -1181,14 +1158,12 @@ class MvNormal_old(ProbDist):
 
     def posterior(self, x, Sigma=None):
         """Posterior for model: X1, ..., Xn ~ N(theta, Sigma), theta ~ self.
-
         Parameters
         ----------
         x: (n, d) ndarray
             data
         Sigma: (d, d) ndarray
             covariance matrix in the model (default: identity matrix)
-
         Notes
         -----
         Scale must be set to 1.
@@ -1197,10 +1172,10 @@ class MvNormal_old(ProbDist):
             raise ValueError('posterior of MvNormal: scale must be one.')
         n = x.shape[0]
         Sigma = np.eye(self.dim) if Sigma is None else Sigma
-        Siginv = inv(Sigma)
-        covinv = inv(self.cov)
+        Siginv = sla.inv(Sigma)
+        covinv = sla.inv(self.cov)
         Qpost = covinv + n * Siginv
-        Sigpost = inv(Qpost)
+        Sigpost = sla.inv(Qpost)
         m = np.full(self.dim, self.loc) if np.isscalar(self.loc) else self.loc
         mupost = Sigpost @ (m @ covinv + Siginv @ np.sum(x, axis=0))
         # m @ covinv works wether the shape of m is (N, d) or (d)
